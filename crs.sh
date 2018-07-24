@@ -1,5 +1,6 @@
 #!/bin/bash
 # container reverse search
+# works under Linux
 
 # list all containers
 IDS=$(docker ps -qa)
@@ -10,16 +11,33 @@ IP='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}'
 MAC='{{range .NetworkSettings.Networks}}{{.MacAddress}}{{end}}'
 BINDS='{{range .HostConfig.Binds}}{{.}}{{end}}'
 
-function inspectIP() {
-    local ID=$1
-    local targetIP=$2
-    local foundIP=$($DI "$IP" $ID | grep "$targetIP")
-    [[ "$foundIP" != "" ]] && echo $ID $foundIP
+
+function inspect() {
+    local format=$1
+    local ID=$2
+    local target=$3
+    local found=$($DI "$format" $ID | grep "$target")
+    [[ "$found" != "" ]] && echo $ID $found
 }
 
 function grepIP() {
+    echo -e "ContainerID  ContainerIP"
     for id in `echo "$IDS"`;do
-        inspectIP $id ${1:-127.0.0.1}
+        inspect "$IP" "$id" ${1:-127.0.0.1}
+    done
+}
+
+function grepBinds() {
+    echo -e "ContainerID  Binds"
+    for id in `echo "$IDS"`;do
+        inspect "$BINDS" "$id" ${1:-"/etc/passwd"}
+    done
+}
+
+function grepMAC() {
+    echo -e "ContainerID  MAC"
+    for id in `echo "$IDS"`;do
+        inspect "$MAC" "$id" ${1:-":"}
     done
 }
 
@@ -46,25 +64,42 @@ function veth_interface_for_container() {
 }
 
 function grepVeth() {
-    veth_interface_for_container $1
+    veth_interface_for_container "$1"
 }
 
 function print_usage() {
-    echo "Usage: ..."
+    echo "$0 [-option] [target]
+  -i ip
+  -m MAC
+  -b binds
+  -v ID
+  -V veth
+  -p pid
+  -P port
+"
 }
 
-while getopts 'i:f:v:p:' flag; do
+[[ "$1" == "" ]] && print_usage
+
+while getopts 'i:m:b:v:V:p:P:' flag; do
     case "${flag}" in
-        i)
-            shift
-            grepIP $1 
-        ;;
-        f) echo "file" ;;
-        v)
-            shift
-            grepVeth $1
-        ;;
+        i)  shift
+            grepIP "$1"
+            ;;
+        m)  shift
+            grepMAC "$1"
+            ;;
+        b)  shift
+            grepBinds "$1"
+            ;;
+        v)  shift
+            grepVeth "$1"
+            ;;
+        V)  shift
+            grepVeth "$1"
+            ;;
         p) echo "process" ;;
+        P) echo "port" ;;
         *) print_usage
     esac
 done

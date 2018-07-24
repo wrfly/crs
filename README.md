@@ -4,7 +4,7 @@ Container Reverse Search
 
 - [x] IP -> ContainerID
 - [ ] Veth -> ContainerID
-- [ ] Dir|File -> ContainerID
+- [x] Dir|File -> ContainerID
 - [ ] Process -> ContainerID
 - [ ] Port(Host mode) -> ContainerID
 - [x] ContainerID -> Veth
