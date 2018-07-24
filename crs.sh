@@ -10,6 +10,8 @@ DI="docker inspect --format"
 IP='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}'
 MAC='{{range .NetworkSettings.Networks}}{{.MacAddress}}{{end}}'
 BINDS='{{range .HostConfig.Binds}}{{.}}{{end}}'
+SANDBOX='{{.NetworkSettings.SandboxID}}'
+
 
 
 function inspect() {
@@ -38,6 +40,14 @@ function grepMAC() {
   echo "ContainerID  MAC"
   for id in `echo "$IDS"`;do
     inspect "$MAC" "$id" ${1:-":"}
+  done
+}
+
+function grepSandbox() {
+  local key="$1"
+  [[ "$key" == "" ]] && EXIT "sanbox key not found"
+  for ID in `echo "$IDS"`;do
+    $DI "$SANDBOX" $ID | grep "$key" && echo "Container: $ID" && return 0
   done
 }
 
@@ -96,6 +106,20 @@ function grepVeth() {
   done
 }
 
+function grepProcess() {
+  local pid=$1
+  [[ "$pid" == "" ]] && EXIT "PID not found"
+  local ns=$(readlink /proc/${pid}/ns/net | sed "s/.*\[\(.*\)\]/\1/g")
+  [[ "${ns}" == "" ]] && EXIT "namespace not found, check your PID"
+  local sandBox=$(ls -li /run/docker/netns | grep ${ns} | sed "s/.*\ \(.*\)/\1/")
+  grepSandbox $sandBox
+}
+
+function EXIT() {
+  echo "ERROR: $1"
+  exit 1
+}
+
 function print_usage() {
   echo "$0 [-option] [target]
   -i IP
@@ -127,7 +151,9 @@ while getopts 'i:m:b:v:V:p:P:h' flag; do
     V)  shift
       grepVeth "$1"
       ;;
-    p) echo "process" ;;
+    p) shift
+      grepProcess "$1"
+      ;;
     P) echo "port" ;;
     h) print_usage ;;
     *) print_usage
