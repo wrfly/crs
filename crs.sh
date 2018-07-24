@@ -11,15 +11,14 @@ IP='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}'
 MAC='{{range .NetworkSettings.Networks}}{{.MacAddress}}{{end}}'
 BINDS='{{range .HostConfig.Binds}}{{.}}{{end}}'
 SANDBOX='{{.NetworkSettings.SandboxID}}'
-
-
+PORTS='{{range .NetworkSettings.Ports}}{{range .}}{{ printf "%s " .HostPort}}{{end}}{{end}}'
 
 function inspect() {
   local format=$1
   local ID=$2
   local target=$3
   local found=$($DI "$format" $ID | grep "$target")
-  [[ "$found" != "" ]] && echo $ID $found
+  [[ "$found" != "" ]] && echo "$ID $found"
 }
 
 function grepIP() {
@@ -44,10 +43,9 @@ function grepMAC() {
 }
 
 function grepSandbox() {
-  local key="$1"
-  [[ "$key" == "" ]] && EXIT "sanbox key not found"
   for ID in `echo "$IDS"`;do
-    $DI "$SANDBOX" $ID | grep "$key" && echo "Container: $ID" && return 0
+    local full_sandbox=$($DI "$SANDBOX" $ID | grep "$1")
+    [[ "$full_sandbox" != "" ]] && echo "Container: $ID" && return 0
   done
 }
 
@@ -100,9 +98,10 @@ function grepVeth() {
   local veth="$1"
   for id in `echo "$IDS"`;do
     veth_interface_of_container $id $veth
-    [[ "$FOUND_CONTAINERID" != "" ]] && \
-      echo "$veth" "$FOUND_CONTAINERID" && \
+    if [[ "$FOUND_CONTAINERID" != "" ]];then
+      echo "$veth $FOUND_CONTAINERID"
       exit 0
+    fi
   done
 }
 
@@ -110,9 +109,17 @@ function grepProcess() {
   local pid=$1
   [[ "$pid" == "" ]] && EXIT "PID not found"
   local ns=$(readlink /proc/${pid}/ns/net | sed "s/.*\[\(.*\)\]/\1/g")
-  [[ "${ns}" == "" ]] && EXIT "namespace not found, check your PID"
+  [[ "${ns}" == "" ]] && EXIT "Process not found"
   local sandBox=$(ls -li /run/docker/netns | grep ${ns} | sed "s/.*\ \(.*\)/\1/")
+  [[ "$sandBox" == "default" ]] && EXIT "Process not inside a container"
   grepSandbox $sandBox
+}
+
+function grepPorts() {
+  [[ "$1" -lt 0 ]] && EXIT "Invalid Port"
+  local PID=$(lsof -i :"$1" -T -P | grep TCP | head -1 | tr -s " " | cut -d" " -f2)
+  printf "Got PID %s\n" $PID
+  grepProcess $PID
 }
 
 function EXIT() {
@@ -128,7 +135,7 @@ function print_usage() {
   -v ID   # Get the veth of that container
   -V Veth # Get the container ID of that veth
   -p PID
-  -P Port
+  -P Port # alias of lsof
 "
 }
 
@@ -154,7 +161,9 @@ while getopts 'i:m:b:v:V:p:P:h' flag; do
     p) shift
       grepProcess "$1"
       ;;
-    P) echo "port" ;;
+    P) shift
+      grepPorts "$1"
+      ;;
     h) print_usage ;;
     *) print_usage
   esac
