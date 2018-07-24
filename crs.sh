@@ -1,9 +1,10 @@
 #!/bin/bash
 # container reverse search
 # works under Linux
+# use sed, ip, lsof, grep, and also, docker
 
 # list all containers
-IDS=$(docker ps -qa)
+IDS=$(docker ps -q)
 
 # formats
 DI="docker inspect --format"
@@ -12,6 +13,7 @@ MAC='{{range .NetworkSettings.Networks}}{{.MacAddress}}{{end}}'
 BINDS='{{range .HostConfig.Binds}}{{.}}{{end}}'
 SANDBOX='{{.NetworkSettings.SandboxID}}'
 PORTS='{{range .NetworkSettings.Ports}}{{range .}}{{ printf "%s " .HostPort}}{{end}}{{end}}'
+HOST_NETWORK='{{range $cid, $conf := .Containers}}{{printf "%s %s\n" $cid $conf.EndpointID}}{{end}}'
 
 function inspect() {
   local format=$1
@@ -21,31 +23,29 @@ function inspect() {
   [[ "$found" != "" ]] && echo "$ID $found"
 }
 
-function grepIP() {
+function searchIP() {
+  [[ "$1" == "" ]] && EXIT "IP is empty"
   echo "ContainerID  ContainerIP"
   for id in `echo "$IDS"`;do
-    inspect "$IP" "$id" ${1:-127.0.0.1}
+    inspect "$IP" "$id" $1
   done
 }
 
-function grepBinds() {
+function searchBinds() {
+  bind_file=$1
+  [[ "$1" == "" ]] && EXIT "Binds is empty"
+  [[ "$1" == "." ]] && bind_file=`pwd`
   echo "ContainerID  Binds"
   for id in `echo "$IDS"`;do
-    inspect "$BINDS" "$id" ${1:-"/etc/passwd"}
+    inspect "$BINDS" "$id" "$bind_file"
   done
 }
 
-function grepMAC() {
+function searchMAC() {
+  [[ "$1" == "" ]] && EXIT "MAC is empty"
   echo "ContainerID  MAC"
   for id in `echo "$IDS"`;do
     inspect "$MAC" "$id" ${1:-":"}
-  done
-}
-
-function grepSandbox() {
-  for ID in `echo "$IDS"`;do
-    local full_sandbox=$($DI "$SANDBOX" $ID | grep "$1")
-    [[ "$full_sandbox" != "" ]] && echo "Container: $ID" && return 0
   done
 }
 
@@ -53,7 +53,8 @@ function grepSandbox() {
 function veth_interface_for_container() {
   # Get the process ID for the container named ${1}:
   local pid=$(docker inspect -f '{{.State.Pid}}' "${1}")
-
+  [[ "$pid" -eq 0 ]] && return 0
+  
   # Make the container's network namespace available to the ip-netns command:
   mkdir -p /var/run/netns
   ln -sf /proc/$pid/ns/net "/var/run/netns/${1}"
@@ -79,6 +80,9 @@ function veth_interface_of_container() {
   # Get the process ID for the container named ${containerID}:
   local pid=$(docker inspect -f '{{.State.Pid}}' "${containerID}")
 
+  # if pid == 0, means the container is not running
+  [[ "$pid" -eq 0 ]] && return 0
+
   # Make the container's network namespace available to the ip-netns command:
   mkdir -p /var/run/netns
   ln -sf /proc/$pid/ns/net "/var/run/netns/${containerID}"
@@ -86,16 +90,17 @@ function veth_interface_of_container() {
   # Get the interface index of the container's eth0:
   local index=$(ip netns exec "${containerID}" ip link show eth0 | head -n1 | sed s/:.*//)
   
-  [[ "$index" == "$vethIndex" ]] && FOUND_CONTAINERID=${containerID}
+  [[ "$index" == "$vethIndex" ]] && export FOUND_CONTAINERID=${containerID}
 
   # Clean up the netns symlink, since we don't need it anymore
   rm -f "/var/run/netns/${containerID}"
 }
 
-function grepVeth() {
+function searchVeth() {
   FOUND_CONTAINERID=""
-  echo "Veth         ContainerID"
   local veth="$1"
+  [[ "$veth" == "" ]] && EXIT "Veth is empty"
+  echo "Veth        ContainerID"
   for id in `echo "$IDS"`;do
     veth_interface_of_container $id $veth
     if [[ "$FOUND_CONTAINERID" != "" ]];then
@@ -105,21 +110,42 @@ function grepVeth() {
   done
 }
 
-function grepProcess() {
+function searchSandbox() {
+  local key="$1"
+  [[ "$key" == "" ]] && EXIT "sanbox key not found"
+  for ID in `echo "$IDS"`;do
+    found=$($DI "$SANDBOX" $ID | grep "$key")
+    [[ "$found" != "" ]] && echo "Container: $ID" && return 0
+  done
+}
+
+function searchHost() {
+  for ID in `echo "$IDS"`;do
+    pids=$(docker top $ID -exo pid | sed 1d)
+    found=$(echo $pids | grep $1)
+    [[ "$found" != "" ]] && echo "Container: $ID" && return 0
+  done
+  return 1
+}
+
+function searchProcess() {
   local pid=$1
   [[ "$pid" == "" ]] && EXIT "PID not found"
   local ns=$(readlink /proc/${pid}/ns/net | sed "s/.*\[\(.*\)\]/\1/g")
   [[ "${ns}" == "" ]] && EXIT "Process not found"
   local sandBox=$(ls -li /run/docker/netns | grep ${ns} | sed "s/.*\ \(.*\)/\1/")
-  [[ "$sandBox" == "default" ]] && EXIT "Process not inside a container"
-  grepSandbox $sandBox
+  if [[ "$sandBox" == "default" ]];then
+    searchHost "$pid" || EXIT "Process not inside a container"
+  else
+    searchSandbox $sandBox
+  fi
 }
 
-function grepPorts() {
+function searchPorts() {
   [[ "$1" -lt 0 ]] && EXIT "Invalid Port"
   local PID=$(lsof -i :"$1" -T -P | grep TCP | head -1 | tr -s " " | cut -d" " -f2)
   printf "Got PID %s\n" $PID
-  grepProcess $PID
+  searchProcess $PID
 }
 
 function EXIT() {
@@ -143,26 +169,26 @@ function print_usage() {
 
 while getopts 'i:m:b:v:V:p:P:h' flag; do
   case "${flag}" in
-    i)  shift
-      grepIP "$1"
+    i) shift
+      searchIP "$1"
       ;;
-    m)  shift
-      grepMAC "$1"
+    m) shift
+      searchMAC "$1"
       ;;
-    b)  shift
-      grepBinds "$1"
+    b) shift
+      searchBinds "$1"
       ;;
-    v)  shift
+    v) shift
       veth_interface_for_container "$1"
       ;;
-    V)  shift
-      grepVeth "$1"
+    V) shift
+      searchVeth "$1"
       ;;
     p) shift
-      grepProcess "$1"
+      searchProcess "$1"
       ;;
     P) shift
-      grepPorts "$1"
+      searchPorts "$1"
       ;;
     h) print_usage ;;
     *) print_usage
