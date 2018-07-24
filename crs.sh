@@ -13,32 +13,32 @@ BINDS='{{range .HostConfig.Binds}}{{.}}{{end}}'
 
 
 function inspect() {
-    local format=$1
-    local ID=$2
-    local target=$3
-    local found=$($DI "$format" $ID | grep "$target")
-    [[ "$found" != "" ]] && echo $ID $found
+  local format=$1
+  local ID=$2
+  local target=$3
+  local found=$($DI "$format" $ID | grep "$target")
+  [[ "$found" != "" ]] && echo $ID $found
 }
 
 function grepIP() {
-    echo -e "ContainerID  ContainerIP"
-    for id in `echo "$IDS"`;do
-        inspect "$IP" "$id" ${1:-127.0.0.1}
-    done
+  echo "ContainerID  ContainerIP"
+  for id in `echo "$IDS"`;do
+    inspect "$IP" "$id" ${1:-127.0.0.1}
+  done
 }
 
 function grepBinds() {
-    echo -e "ContainerID  Binds"
-    for id in `echo "$IDS"`;do
-        inspect "$BINDS" "$id" ${1:-"/etc/passwd"}
-    done
+  echo "ContainerID  Binds"
+  for id in `echo "$IDS"`;do
+    inspect "$BINDS" "$id" ${1:-"/etc/passwd"}
+  done
 }
 
 function grepMAC() {
-    echo -e "ContainerID  MAC"
-    for id in `echo "$IDS"`;do
-        inspect "$MAC" "$id" ${1:-":"}
-    done
+  echo "ContainerID  MAC"
+  for id in `echo "$IDS"`;do
+    inspect "$MAC" "$id" ${1:-":"}
+  done
 }
 
 # thanks to https://stackoverflow.com/a/28613516/4399982
@@ -63,43 +63,73 @@ function veth_interface_for_container() {
   rm -f "/var/run/netns/${1}"
 }
 
+# thanks to https://stackoverflow.com/a/28613516/4399982
+function veth_interface_of_container() {
+  local containerID="$1"
+  local veth="$2"
+  local vethIndex=$(ip link show | grep $veth | cut -d: -f2 | cut -d@ -f2 | cut -df -f2)
+  # Get the process ID for the container named ${containerID}:
+  local pid=$(docker inspect -f '{{.State.Pid}}' "${containerID}")
+
+  # Make the container's network namespace available to the ip-netns command:
+  mkdir -p /var/run/netns
+  ln -sf /proc/$pid/ns/net "/var/run/netns/${containerID}"
+
+  # Get the interface index of the container's eth0:
+  local index=$(ip netns exec "${containerID}" ip link show eth0 | head -n1 | sed s/:.*//)
+  
+  [[ "$index" == "$vethIndex" ]] && FOUND_CONTAINERID=${containerID}
+
+  # Clean up the netns symlink, since we don't need it anymore
+  rm -f "/var/run/netns/${containerID}"
+}
+
 function grepVeth() {
-    veth_interface_for_container "$1"
+  FOUND_CONTAINERID=""
+  echo "Veth         ContainerID"
+  local veth="$1"
+  for id in `echo "$IDS"`;do
+    veth_interface_of_container $id $veth
+    [[ "$FOUND_CONTAINERID" != "" ]] && \
+      echo "$veth" "$FOUND_CONTAINERID" && \
+      exit 0
+  done
 }
 
 function print_usage() {
-    echo "$0 [-option] [target]
-  -i ip
+  echo "$0 [-option] [target]
+  -i IP
   -m MAC
-  -b binds
-  -v ID
-  -V veth
-  -p pid
-  -P port
+  -b Binds
+  -v ID   # Get the veth of that container
+  -V Veth # Get the container ID of that veth
+  -p PID
+  -P Port
 "
 }
 
 [[ "$1" == "" ]] && print_usage
 
-while getopts 'i:m:b:v:V:p:P:' flag; do
-    case "${flag}" in
-        i)  shift
-            grepIP "$1"
-            ;;
-        m)  shift
-            grepMAC "$1"
-            ;;
-        b)  shift
-            grepBinds "$1"
-            ;;
-        v)  shift
-            grepVeth "$1"
-            ;;
-        V)  shift
-            grepVeth "$1"
-            ;;
-        p) echo "process" ;;
-        P) echo "port" ;;
-        *) print_usage
-    esac
+while getopts 'i:m:b:v:V:p:P:h' flag; do
+  case "${flag}" in
+    i)  shift
+      grepIP "$1"
+      ;;
+    m)  shift
+      grepMAC "$1"
+      ;;
+    b)  shift
+      grepBinds "$1"
+      ;;
+    v)  shift
+      veth_interface_for_container "$1"
+      ;;
+    V)  shift
+      grepVeth "$1"
+      ;;
+    p) echo "process" ;;
+    P) echo "port" ;;
+    h) print_usage ;;
+    *) print_usage
+  esac
 done
